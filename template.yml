@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Logs Partitioner stack
+
+Parameters:
+  CloudTrailBucketName:
+    Type: String
+    Default: "bucket-name-for-cloudtrail"
+    Description: Centralized AWS Cloudtrail bucket name
+
+  FlowLogsBucketName:
+    Type: String
+    Default: "bucket-name-for-vpcflowlogs"
+    Description: Centralized AWS VPC Flowlogs bucket name
+
+  OrganizationId:
+    Type: String
+    Default: "your-organization-id"
+    Description: The Organization Id of your organization
+
+  AthenaOutputBucketName:
+    Type: String
+    Default: "bucket-name-for-athena-output"
+    Description: Athena Query Results Output Bucket Name
+
+Resources:
+  PartitionTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "PartitionName"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "PartitionName"
+          KeyType: "HASH"
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      TableName: "glue-partition-table"
+      BillingMode: PAY_PER_REQUEST
+
+  GluePartitionLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "glue-createPartitions-lambda"
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Runtime: python3.8
+      MemorySize: 512
+      Environment:
+        Variables:
+          DATABASE: 'default'
+          OUTPUT_BUCKET: !Ref AthenaOutputBucketName
+          DYNAMODB_TABLE: !Ref PartitionTable
+      Timeout: 420
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: "AllowListBucketOnLogsBuckets"
+              Effect: "Allow"
+              Action:
+                - "s3:ListBucket"
+              Resource:
+                - !Sub "arn:aws:s3:::${CloudTrailBucketName}"
+                - !Sub "arn:aws:s3:::${FlowLogsBucketName}"
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: "AllowGetObjectOnLogsBuckets"
+              Effect: "Allow"
+              Action:
+                - "s3:GetObject"
+              Resource:
+                - !Sub "arn:aws:s3:::${CloudTrailBucketName}/AWSLogs/${OrganizationId}/*"
+                - !Sub "arn:aws:s3:::${FlowLogsBucketName}/AWSLogs/*"
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: "AllowRightsOnGlueObjects"
+              Effect: "Allow"
+              Action:
+                - "glue:GetDatabase"
+                - "glue:GetTable"
+                - "glue:BatchCreatePartition"
+              Resource:
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/default"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/default/*"
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: "AllowReadWriteOnDynamoDB"
+              Effect: "Allow"
+              Action:
+                - "dynamodb:GetItem"
+                - "dynamodb:PutItem"
+              Resource:
+                Fn::GetAtt:
+                  - PartitionTable
+                  - Arn
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: "AllowQueryExecutionOnAthena"
+              Effect: "Allow"
+              Action:
+                - "athena:StartQueryExecution"
+              Resource:
+                - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: "AllowReadWriteOnAthenaBucket"
+              Effect: "Allow"
+              Action:
+                - "s3:GetBucketLocation"
+                - "s3:GetObject"
+                - "s3:ListBucket"
+                - "s3:ListBucketMultipartUploads"
+                - "s3:ListMultipartUploadParts"
+                - "s3:AbortMultipartUpload"
+                - "s3:PutObject"
+              Resource:
+                - !Sub "arn:aws:s3:::${AthenaOutputBucketName}"
+                - !Sub "arn:aws:s3:::${AthenaOutputBucketName}/*"
+
+  GluePartitionLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join
+        - ""
+        - - "/aws/lambda/"
+          - !Ref GluePartitionLambda
+      RetentionInDays: 14
+
+Outputs:
+  GluePartitionLambdaName:
+    Export:
+      Name: GluePartitionLambdaName
+    Value: !Ref GluePartitionLambda
+
+  GluePartitionLambdaArn:
+    Export:
+      Name: GluePartitionLambdaArn
+    Value:
+      Fn::GetAtt:
+        - "GluePartitionLambda"
+        - "Arn"

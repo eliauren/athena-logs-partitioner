@@ -1,2 +1,1 @@
-# athena-logs-partitioner
-Athena Logs Partitioner
+# athena-cloudtrail

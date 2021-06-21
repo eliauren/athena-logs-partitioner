@@ -1,0 +1,130 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudTrail Logs
+
+Parameters:
+  OrganizationId:
+    Type: String
+    Default: "your-organization-id"
+    Description: The Organization Id of your organization
+
+  GluePartitionLambdaArnOutputValue:
+    Type: String
+    Default: "GluePartitionLambdaArn"
+    Description: Name of the output value for the Glue Partition Lambda Arn
+
+  GluePartitionLambdaNameOutputValue:
+    Type: String
+    Default: "GluePartitionLambdaName"
+    Description: Name of the output value for the Glue Partition Lambda Name
+
+Resources:
+  CloudTrailLogsGlueTable:
+      Type: AWS::Glue::Table
+      Properties:
+        CatalogId: !Ref "AWS::AccountId"
+        DatabaseName: "default"
+        TableInput:
+          Name: "cloudtrail_logs"
+          TableType: EXTERNAL_TABLE
+          Parameters: { "EXTERNAL": "TRUE" }
+          PartitionKeys:
+            - Name: accountid
+              Type: string
+            - Name: regioncode
+              Type: string
+            - Name: date
+              Type: date
+          StorageDescriptor:
+            InputFormat: "com.amazon.emr.cloudtrail.CloudTrailInputFormat"
+            OutputFormat: "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+            SerdeInfo:
+              SerializationLibrary: "com.amazon.emr.hive.serde.CloudTrailSerde"
+              Parameters: { "serialization.format": "1" }
+            StoredAsSubDirectories: true
+            Location:
+              Fn::Join:
+                - ""
+                - - "s3://"
+                  - "bucket-name-for-cloudtrail-logs"
+                  - "/AWSLogs/"
+                  - !Ref OrganizationId
+            Columns:
+              - Name: eventversion
+                Type: string
+              - Name: useridentity
+                Type: "struct<type:string,principalid:string,arn:string,accountid:string,invokedby:string,accesskeyid:string,username:string,sessioncontext:struct<attributes:struct<mfaauthenticated:string,creationdate:string>,sessionissuer:struct<type:string,principalid:string,arn:string,accountid:string,username:string>>>"
+              - Name: eventtime
+                Type: string
+              - Name: eventsource
+                Type: string
+              - Name: eventname
+                Type: string
+              - Name: awsregion
+                Type: string
+              - Name: sourceipaddress
+                Type: string
+              - Name: useragent
+                Type: string
+              - Name: errorcode
+                Type: string
+              - Name: errormessage
+                Type: string
+              - Name: requestparameters
+                Type: string
+              - Name: responseelements
+                Type: string
+              - Name: additionaleventdata
+                Type: string
+              - Name: requestid
+                Type: string
+              - Name: eventid
+                Type: string
+              - Name: resources
+                Type: "array<struct<arn:string,accountid:string,type:string>>"
+              - Name: eventtype
+                Type: string
+              - Name: apiversion
+                Type: string
+              - Name: readonly
+                Type: string
+              - Name: recipientaccountid
+                Type: string
+              - Name: serviceeventdetails
+                Type: string
+              - Name: sharedeventid
+                Type: string
+              - Name: vpcendpointid
+                Type: string
+
+  CloudTrailPartitionLambdaScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "ScheduledRule"
+      ScheduleExpression: "cron(0 2 * * ? *)"
+      State: "ENABLED"
+      Targets:
+        - Arn:
+            Fn::ImportValue:
+              !Ref GluePartitionLambdaArnOutputValue
+          Input: !Sub
+            '{
+                "log_type": "cloudtrail",
+                "bucket_name": "bucket-name-for-cloudtrail-logs",
+                "bucket_prefix": "AWSLogs/your-organization-id/",
+                "bucket_logs_prefix": "{account_id}/CloudTrail/",
+                "glue_table_name": "cloudtrail_logs"
+              }'
+          Id: "TargetCloudTrailPartitionLambda"
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::ImportValue:
+          !Ref GluePartitionLambdaNameOutputValue
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - "CloudTrailPartitionLambdaScheduledRule"
+          - "Arn"

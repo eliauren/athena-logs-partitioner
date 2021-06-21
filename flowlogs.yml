@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPC Flow Logs
+
+Parameters:
+  GluePartitionLambdaArnOutputValue:
+    Type: String
+    Default: "GluePartitionLambdaArn"
+    Description: Name of the output value for the Glue Partition Lambda Arn
+
+  GluePartitionLambdaNameOutputValue:
+    Type: String
+    Default: "GluePartitionLambdaName"
+    Description: Name of the output value for the Glue Partition Lambda Name
+
+Resources:
+  FlowLogsGlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref "AWS::AccountId"
+      DatabaseName: "default"
+      TableInput:
+        Name: "vpc_flow_logs"
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          "EXTERNAL": "TRUE"
+          "skip.header.line.count": "1"
+        PartitionKeys:
+          - Name: accountid
+            Type: string
+          - Name: regioncode
+            Type: string
+          - Name: date
+            Type: date
+        StorageDescriptor:
+          InputFormat: "org.apache.hadoop.mapred.TextInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
+            Parameters: { "field.delim": " ", "serialization.format": " " }
+          StoredAsSubDirectories: true
+          Location:
+            Fn::Join:
+              - ""
+              - - "s3://"
+                - "bucket-name-for-vpc-flowlogs"
+                - "/AWSLogs/"
+          Columns:
+            - Name: version
+              Type: int
+            - Name: account
+              Type: string
+            - Name: interfaceid
+              Type: string
+            - Name: sourceaddress
+              Type: string
+            - Name: destinationaddress
+              Type: string
+            - Name: sourceport
+              Type: int
+            - Name: destinationport
+              Type: int
+            - Name: protocol
+              Type: int
+            - Name: numpackets
+              Type: int
+            - Name: numbytes
+              Type: bigint
+            - Name: starttime
+              Type: int
+            - Name: endtime
+              Type: int
+            - Name: action
+              Type: string
+            - Name: logstatus
+              Type: string
+            - Name: vpcid
+              Type: string
+            - Name: subnetid
+              Type: string
+            - Name: instanceid
+              Type: string
+            - Name: tcpflags
+              Type: int
+            - Name: type
+              Type: string
+            - Name: pktsrcaddr
+              Type: string
+            - Name: pktdstaddr
+              Type: string
+            - Name: region
+              Type: string
+            - Name: azid
+              Type: string
+            - Name: sublocationtype
+              Type: string
+            - Name: sublocationid
+              Type: string
+            - Name: pktsrcawsservice
+              Type: string
+            - Name: pktdstawsservice
+              Type: string
+            - Name: flowdirection
+              Type: string
+            - Name: trafficpath
+              Type: string
+
+  FlowLogsPartitionLambdaScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "ScheduledRule"
+      ScheduleExpression: "cron(0 1 * * ? *)"
+      State: "ENABLED"
+      Targets:
+        - Arn:
+            Fn::ImportValue:
+              !Ref GluePartitionLambdaArnOutputValue
+          Input: !Sub
+            '{
+                  "log_type": "flowlogs",
+                  "bucket_name": "bucket-name-for-vpc-flowlogs",
+                  "bucket_prefix": "AWSLogs/",
+                  "bucket_logs_prefix": "{account_id}/vpcflowlogs/",
+                  "glue_table_name": "vpc_flow_logs"
+                }'
+          Id: "TargetFlowLogsPartitionLambda"
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::ImportValue:
+          !Ref GluePartitionLambdaNameOutputValue
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - FlowLogsPartitionLambdaScheduledRule
+          - "Arn"
