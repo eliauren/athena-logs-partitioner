@@ -41,13 +41,7 @@ Resources:
               SerializationLibrary: "com.amazon.emr.hive.serde.CloudTrailSerde"
               Parameters: { "serialization.format": "1" }
             StoredAsSubDirectories: true
-            Location:
-              Fn::Join:
-                - ""
-                - - "s3://"
-                  - "bucket-name-for-cloudtrail-logs"
-                  - "/AWSLogs/"
-                  - !Ref OrganizationId
+            Location: !Sub "s3://bucket-name-for-cloudtrail-logs/AWSLogs/${OrganizationId}"
             Columns:
               - Name: eventversion
                 Type: string
@@ -106,7 +100,7 @@ Resources:
         - Arn:
             Fn::ImportValue:
               !Ref GluePartitionLambdaArnOutputValue
-          Input: !Sub
+          Input:
             '{
                 "log_type": "cloudtrail",
                 "bucket_name": "bucket-name-for-cloudtrail-logs",

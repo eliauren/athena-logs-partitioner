@@ -38,12 +38,7 @@ Resources:
             SerializationLibrary: "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
             Parameters: { "field.delim": " ", "serialization.format": " " }
           StoredAsSubDirectories: true
-          Location:
-            Fn::Join:
-              - ""
-              - - "s3://"
-                - "bucket-name-for-vpc-flowlogs"
-                - "/AWSLogs/"
+          Location: "s3://bucket-name-for-vpc-flowlogs/AWSLogs/"
           Columns:
             - Name: version
               Type: int
@@ -114,7 +109,7 @@ Resources:
         - Arn:
             Fn::ImportValue:
               !Ref GluePartitionLambdaArnOutputValue
-          Input: !Sub
+          Input:
             '{
                   "log_type": "flowlogs",
                   "bucket_name": "bucket-name-for-vpc-flowlogs",

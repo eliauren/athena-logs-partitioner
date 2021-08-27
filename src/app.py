@@ -9,7 +9,6 @@ from botocore.exceptions import ClientError
 database = os.environ['DATABASE']
 output_bucket = os.environ['OUTPUT_BUCKET']
 dynamodb_table = os.environ['DYNAMODB_TABLE']
-days = 30 * 24 * 60 * 60
 main_region = "eu-west-1"
 
 # -------- boto3 variables -----------
@@ -74,8 +73,7 @@ def get_partition(partition_name):
 
 
 def insert_partition(partition_name):
-    ttl = int(time.time()) + days
-    response = dynamodb_client.put_item(Item={"PartitionName": partition_name, "ttl": ttl})
+    response = dynamodb_client.put_item(Item={"PartitionName": partition_name})
     return response
 
 
