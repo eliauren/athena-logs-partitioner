@@ -103,7 +103,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Description: "ScheduledRule"
-      ScheduleExpression: "cron(0 1 * * ? *)"
+      ScheduleExpression: "cron(0 2 * * ? *)"
       State: "ENABLED"
       Targets:
         - Arn:
@@ -127,7 +127,4 @@ Resources:
           !Ref GluePartitionLambdaNameOutputValue
       Action: "lambda:InvokeFunction"
       Principal: "events.amazonaws.com"
-      SourceArn:
-        Fn::GetAtt:
-          - FlowLogsPartitionLambdaScheduledRule
-          - "Arn"
+      SourceArn: !GetAtt FlowLogsPartitionLambdaScheduledRule.Arn
