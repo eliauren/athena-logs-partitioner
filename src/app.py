@@ -1,119 +1,141 @@
+import os
 import datetime
 import time
 import boto3
-import os
 
-from botocore.exceptions import ClientError
+
+from typing import List
 
 # Global Variables
-database = os.environ['DATABASE']
-output_bucket = os.environ['OUTPUT_BUCKET']
-dynamodb_table = os.environ['DYNAMODB_TABLE']
-main_region = "eu-west-1"
+MAIN_REGION = os.environ["AWS_REGION"]
+DATABASE = os.environ['DATABASE']
+OUTPUT_BUCKET = os.environ['OUTPUT_BUCKET']
+DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
 
 # -------- boto3 variables -----------
-athena_client = boto3.client("athena", region_name=main_region)
-s3_client = boto3.client("s3", region_name=main_region)
-dynamodb_client = boto3.resource("dynamodb", region_name=main_region).Table(
-    dynamodb_table
-)
+athena = boto3.client('athena', region_name=MAIN_REGION)
+s3 = boto3.client('s3', region_name=MAIN_REGION)
+dynamodb_table = boto3.resource('dynamodb', region_name=MAIN_REGION).Table(DYNAMODB_TABLE)
 
 # Get Year, Month, Day for partition
-date = datetime.datetime.now()
-year = str(date.year)
-month = str(date.month).rjust(2, "0")
-day = str(date.day).rjust(2, "0")
-str_date = f"{year}-{month}-{day}"
+DATE = datetime.datetime.now()
+YEAR = str(DATE.year)
+MONTH = str(DATE.month).rjust(2, '0')
+DAY = str(DATE.day).rjust(2, '0')
+STR_DATE = f'{YEAR}-{MONTH}-{DAY}'
 
 
-def list_accounts(bucket_name, bucket_prefix):
-    accounts = []
+def list_accounts(bucket_name: str, bucket_prefix: str) -> List[str]:
+    common_prefixes = s3.list_objects(
+        Bucket=bucket_name, Prefix=bucket_prefix, Delimiter='/'
+    )['CommonPrefixes']
 
-    response = s3_client.list_objects(
-        Bucket=bucket_name, Prefix=bucket_prefix, Delimiter="/"
+    return [
+        account.get('Prefix', '').replace(bucket_prefix, '').replace('/', '')
+        for account in common_prefixes
+    ]
+
+
+def list_regions(bucket_name: str, bucket_prefix: str, account_id: str) -> List[str]:
+    common_prefixes = s3.list_objects(
+        Bucket=bucket_name, Prefix=bucket_prefix.format(account_id=account_id), Delimiter='/'
+    )['CommonPrefixes']
+
+    return [
+        region.get('Prefix', '').replace(bucket_prefix.format(account_id=account_id), '').replace('/', '')
+        for region in common_prefixes
+    ]
+
+
+def is_partition_exist(partition_name: str) -> bool:
+    response = dynamodb_table.get_item(
+        Key={'PartitionName': partition_name}
     )
-
-    for account in response.get("CommonPrefixes"):
-        account_id = (
-            account.get("Prefix", "").replace(bucket_prefix, "").replace("/", "")
-        )
-        accounts.append(account_id)
-
-    return accounts
+    return 'Item' in response
 
 
-def list_regions(bucket_name, bucket_prefix, account_id):
-    regions = []
-
-    response = s3_client.list_objects(
-        Bucket=bucket_name,
-        Prefix=bucket_prefix.format(account_id=account_id),
-        Delimiter="/",
-    )
-
-    for region in response.get("CommonPrefixes"):
-        region_name = (
-            region.get("Prefix", "")
-            .replace(bucket_prefix.format(account_id=account_id), "")
-            .replace("/", "")
-        )
-        regions.append(region_name)
-
-    return regions
-
-
-def get_partition(partition_name):
-    try:
-        response = dynamodb_client.get_item(Key={"PartitionName": partition_name})
-    except ClientError as e:
-        print(e.response["Error"]["Message"])
-    else:
-        if "Item" in response:
-            return response["Item"]
-
-
-def insert_partition(partition_name):
-    response = dynamodb_client.put_item(Item={"PartitionName": partition_name})
-    return response
-
-
-def build_query_partition(account_id, region, table_name, bucket_name, bucket_prefix):
-    return str(
-        "ALTER TABLE "
-        + table_name
-        + " ADD PARTITION (accountid='"
-        + account_id
-        + "',regioncode='"
-        + region
-        + "',`date`='"
-        + str_date
-        + "') location '"
-        + "s3://" + bucket_name + "/"
-        + bucket_prefix.format(account_id=account_id)
-        + region
-        + "/"
-        + year
-        + "/"
-        + month
-        + "/"
-        + day
-        + "';"
+def insert_partition(partition_name: str):
+    dynamodb_table.put_item(
+        Item={'PartitionName': partition_name}
     )
 
 
-def run_query(query, s3_output):
-    query_response = athena_client.start_query_execution(
+def build_query_partition(
+        account_id: str,
+        region: str,
+        table_name: str,
+        bucket_name: str,
+        bucket_prefix: str
+) -> str:
+    prefix_formatted = bucket_prefix.format(account_id=account_id)
+
+    return f"""
+        ALTER TABLE {table_name}
+        ADD PARTITION (
+            accountid='{account_id}',
+            regioncode='{region}',
+            `date`='{STR_DATE}
+            )
+        location 's3://{bucket_name}/{prefix_formatted}{region}/{YEAR}/{MONTH}/{DAY}';
+        """
+
+
+def run_query(query: str, s3_output: str):
+    query_response = athena.start_query_execution(
         QueryString=query,
-        QueryExecutionContext={"Database": database},
-        ResultConfiguration={
-            "OutputLocation": "s3://" + s3_output + "/",
-        },
+        QueryExecutionContext={'Database': DATABASE},
+        ResultConfiguration={'OutputLocation': f"s3://{s3_output}/"}
     )
-    print("Execution ID: " + query_response["QueryExecutionId"])
+
+    print(f"Execution ID: {query_response['QueryExecutionId']}")
     return query_response
 
 
-def lambda_handler(event, context):
+def create_partition(
+        partition_name: str,
+        account_id: str,
+        region: str,
+        bucket_name: str,
+        bucket_prefix: str,
+        table_name: str
+):
+    existing_partition = is_partition_exist(partition_name=partition_name)
+
+    if existing_partition:
+        print(f"Partition {partition_name} already exists")
+        return
+
+    query = build_query_partition(
+        account_id=account_id,
+        region=region,
+        bucket_name=bucket_name,
+        bucket_prefix=bucket_prefix,
+        table_name=table_name
+    )
+
+    run_query(query=query, s3_output=OUTPUT_BUCKET)
+    insert_partition(partition_name=partition_name)
+
+    # Sleep to avoid rate limiting
+    time.sleep(0.3)
+
+
+def get_partitions_to_create(accounts: List[str], regions: List[str], log_type: str):
+
+    partition_to_create = []
+
+    for account_id in accounts:
+        for region in regions:
+            partition_to_create.append({
+                "partition_name": f"{log_type}#{account_id}#{region}#{STR_DATE}",
+                "account_id": account_id,
+                "region": region,
+                "hour": None
+            })
+    return partition_to_create
+
+
+def lambda_handler(event: dict, context):
     bucket_prefix = event['bucket_prefix']
     bucket_logs_prefix = event['bucket_logs_prefix']
     bucket_name = event['bucket_name']
@@ -127,30 +149,23 @@ def lambda_handler(event, context):
         account_id=accounts[0]
     )
 
-    for account_id in accounts:
-        for region in regions:
-            partition_name = f"{log_type}#{account_id}#{region}#{str_date}"
-            existing_partition = get_partition(
-                partition_name=partition_name
-            )
-            if not existing_partition:
-                insert_partition(partition_name=partition_name)
+    partitions_to_create = get_partitions_to_create(
+        accounts=accounts,
+        regions=regions,
+        log_type=log_type
+    )
 
-                query = build_query_partition(
-                    account_id=account_id,
-                    region=region,
-                    bucket_name=bucket_name,
-                    bucket_prefix=bucket_prefix + bucket_logs_prefix,
-                    table_name=table_name)
+    for partition in partitions_to_create:
+        create_partition(
+            partition_name=partition["partition_name"],
+            account_id=partition["account_id"],
+            region=partition["region"],
+            bucket_name=bucket_name,
+            bucket_prefix=bucket_prefix + bucket_logs_prefix,
+            table_name=table_name
+        )
 
-                run_query(query=query, s3_output=output_bucket)
-                time.sleep(0.2)
+    time.sleep(1)
 
-        time.sleep(1)
-
-    response = {
-        "statusCode": 200,
-        "body": "Athena Partitions created"
-    }
-
-    return response
+    print(f'Partitions Created {len(partitions_to_create)}', partitions_to_create)
+    return partitions_to_create
